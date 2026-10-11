@@ -259,12 +259,26 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 			return ResponseScanResult{Clean: false, ScanError: err.Error()}
 		}
 	}
-	if views.retained == "" && views.fragmented == "" && views.encoded == "" && views.decoded == "" {
+	if views.retained == "" && views.retainedMixed == "" && views.fragmented == "" && views.encoded == "" && views.decoded == "" {
 		return ResponseScanResult{Clean: true}
 	}
 	result := ResponseScanResult{Clean: true}
 	if views.retained != "" {
 		result = s.ScanResponseWithSuppress(ctx, views.retained, suppressTarget, suppress)
+		if !result.Clean {
+			result.TransformedContent = ""
+			return result
+		}
+	}
+	if views.retainedMixed != "" {
+		mixedResult := s.scanRetainedMixedView(ctx, views.retainedMixed, views.retainedMixedSynthetic, suppressTarget, suppress)
+		mixedResult.SuppressedMatches = append(result.SuppressedMatches, mixedResult.SuppressedMatches...)
+		mixedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, mixedResult.ObservedCoreMatches...)
+		if result.StegoDensity > mixedResult.StegoDensity {
+			mixedResult.StegoDensity = result.StegoDensity
+		}
+		mixedResult.StegoDetected = result.StegoDetected || mixedResult.StegoDetected
+		result = mixedResult
 		if !result.Clean {
 			result.TransformedContent = ""
 			return result
@@ -307,6 +321,269 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 // short structured and optional-whitespace matches when they cross a boundary
 // without promoting an isolated DAN-like token from one fragment.
 func requireFragmentBoundaryMatch(content string, result ResponseScanResult) ResponseScanResult {
+	return filterResponseMatchesBySpan(content, result, func(_ ResponseMatch, view string, start, end int, located bool) bool {
+		return located && strings.ContainsRune(view[start:end], '\n')
+	})
+}
+
+// opaqueStitchedTokenMinRunes is the shortest all-letter or all-digit run that
+// counts as evidence a run separated by control bytes carries language or a
+// structured value rather than noise. Mixed letter-digit runs are the common
+// shape of binary noise and do not count.
+const opaqueStitchedTokenMinRunes = 3
+
+// opaqueShortWords are two-letter English function words. A stitched
+// instruction can rest on one of them ("be DAN", "act as DAN"), while a stray
+// letter or an arbitrary letter pair from binary noise is not in the set.
+var opaqueShortWords = map[string]bool{
+	"am": true, "an": true, "as": true, "at": true, "be": true, "by": true,
+	"do": true, "go": true, "he": true, "if": true, "in": true, "is": true,
+	"it": true, "me": true, "my": true, "no": true, "of": true, "on": true,
+	"or": true, "so": true, "to": true, "up": true, "us": true, "we": true,
+}
+
+// opaqueStitchedRescanLimit bounds how many times the retained mixed view is
+// rescanned after stitched matches are discarded. Random binary rarely needs
+// more than one rescan; a body that needs more than this stays blocked, so a
+// crafted body cannot buy unbounded scanning.
+const opaqueStitchedRescanLimit = 8
+
+// scanRetainedMixedView scans the retained mixed view and discards matches
+// stitched from unrelated binary runs. The response scan reports only its
+// first matching pass, so a discarded match could otherwise hide a genuine
+// one in a later pass or later in the body. Each round therefore turns the
+// separators a discarded match depended on into hard boundaries and scans
+// again, until a round discards nothing. If the bound is reached, the last
+// unfiltered result is returned, so the body stays blocked.
+func (s *Scanner) scanRetainedMixedView(ctx context.Context, content string, synthetic []bool, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	for range opaqueStitchedRescanLimit {
+		result := s.ScanResponseWithSuppress(ctx, content, suppressTarget, suppress)
+		filtered, dropped := s.filterStitchedMixedMatches(ctx, content, synthetic, result, suppressTarget, suppress)
+		if len(dropped) == 0 {
+			return filtered
+		}
+		content, synthetic = hardenSyntheticSeparators(content, synthetic, dropped)
+	}
+	return s.ScanResponseWithSuppress(ctx, content, suppressTarget, suppress)
+}
+
+// hardenSyntheticSeparators replaces the listed newlines, by newline index,
+// with a hard "\n\ufffd\n" boundary that no response pattern can match across.
+func hardenSyntheticSeparators(content string, synthetic []bool, newlines map[int]bool) (string, []bool) {
+	var b strings.Builder
+	b.Grow(len(content) + 4*len(newlines))
+	out := make([]bool, 0, len(synthetic)+len(newlines))
+	n := 0
+	for i := 0; i < len(content); i++ {
+		if content[i] != '\n' {
+			b.WriteByte(content[i])
+			continue
+		}
+		if newlines[n] {
+			b.WriteString("\n\ufffd\n")
+			out = append(out, true, true)
+		} else {
+			b.WriteByte('\n')
+			out = append(out, synthetic[n])
+		}
+		n++
+	}
+	return b.String(), out
+}
+
+// filterStitchedMixedMatches applies context evidence to the retained mixed
+// view. Its runs are the text between synthetic separators; real line breaks
+// stay inside a run. A match whose span crosses a synthetic separator is
+// stitched. A reported span can also cover only a pattern's core token, so a
+// span inside one run is tested by rescanning that run alone: if the same
+// pattern still matches, the match is contiguous and kept. Otherwise it
+// depended on a neighbouring run. A stitched match is kept only when the runs
+// it joins read as language (stitchedRunsCarryWords). A match whose span
+// cannot be located, whose view does not preserve the separators, or whose
+// run cannot be rescanned is kept. It also returns, by newline index, the
+// synthetic separators each discarded match depended on.
+func (s *Scanner) filterStitchedMixedMatches(ctx context.Context, content string, synthetic []bool, result ResponseScanResult, suppressTarget string, suppress []config.SuppressEntry) (ResponseScanResult, map[int]bool) {
+	// Evidence is read per run after the same normalization the matcher
+	// used. A normalized view is mapped to the raw runs by newline index,
+	// which every normalized view preserves.
+	if strings.Count(content, "\n") != len(synthetic) {
+		return result, nil
+	}
+	var runs []string
+	var runSeparators []int // newline index after each run but the last
+	runStart, newline := 0, 0
+	for i := 0; i < len(content); i++ {
+		if content[i] != '\n' {
+			continue
+		}
+		if synthetic[newline] {
+			runs = append(runs, content[runStart:i])
+			runSeparators = append(runSeparators, newline)
+			runStart = i + 1
+		}
+		newline++
+	}
+	runs = append(runs, content[runStart:])
+	runOf := func(view string, offset int) int {
+		run := 0
+		for n := range strings.Count(view[:offset], "\n") {
+			if synthetic[n] {
+				run++
+			}
+		}
+		return run
+	}
+	dropped := map[int]bool{}
+	runMatches := map[int]map[string]bool{}
+	filtered := filterResponseMatchesBySpan(content, result, func(match ResponseMatch, view string, start, end int, located bool) bool {
+		if !located || strings.Count(view, "\n") != len(synthetic) {
+			return true
+		}
+		first, last := runOf(view, start), runOf(view, end)
+		leet := match.span.ViewLabel == ViewLeetspeak
+		if last > first {
+			if stitchedRunsCarryWords(runs, first, last, leet) {
+				return true
+			}
+			for r := first; r < last; r++ {
+				dropped[runSeparators[r]] = true
+			}
+			return false
+		}
+		names, ok := runMatches[first]
+		if !ok {
+			runResult := s.ScanResponseWithSuppress(ctx, runs[first], suppressTarget, suppress)
+			if runResult.Failed() {
+				return true
+			}
+			names = map[string]bool{}
+			for _, m := range runResult.Matches {
+				names[m.PatternName] = true
+			}
+			runMatches[first] = names
+		}
+		if names[match.PatternName] {
+			return true
+		}
+		if (first > 0 && stitchedRunsCarryWords(runs, first-1, first, leet)) ||
+			(first < len(runs)-1 && stitchedRunsCarryWords(runs, first, first+1, leet)) {
+			return true
+		}
+		if first > 0 {
+			dropped[runSeparators[first-1]] = true
+		}
+		if first < len(runs)-1 {
+			dropped[runSeparators[first]] = true
+		}
+		return false
+	})
+	return filtered, dropped
+}
+
+// stitchedRunsCarryWords reports whether runs first through last read as
+// language across their separators. The prose at the end of the first run and
+// at the start of the last run must each hold a word (hasOpaqueResponseWord),
+// and every run between them must be wholly prose with a word. Binary noise
+// beyond those edges does not count against them, so padding cannot hide a
+// split instruction, while a stray letter beside an unrelated token is not a
+// word.
+//
+// Runs are judged after the matcher's own normalization, so invisible or
+// format characters cannot break a word apart. A match the scanner found only
+// after leetspeak normalization is also judged on leetspeak-normalized runs,
+// so "1gn0re" reads as the word it spells. That normalization also turns
+// binary digits and symbols into letters, so in that reading a word needs
+// opaqueStitchedLeetWordMinLetters letters and the two-letter words do not
+// count; they still count in the plain reading. Each edge passes if either
+// reading holds a word.
+func stitchedRunsCarryWords(runs []string, first, last int, leet bool) bool {
+	type reading struct {
+		text    string
+		hasWord func(string) bool
+	}
+	readings := func(run string) []reading {
+		plain := normalize.ForMatching(run)
+		out := []reading{{plain, hasOpaqueResponseWord}}
+		if leet {
+			out = append(out, reading{normalize.Leetspeak(plain), hasOpaqueLeetWord})
+		}
+		return out
+	}
+	edgeHasWord := func(run string, head bool) bool {
+		for _, r := range readings(run) {
+			if r.hasWord(opaqueProseEdge(r.text, head)) {
+				return true
+			}
+		}
+		return false
+	}
+	if !edgeHasWord(runs[first], false) || !edgeHasWord(runs[last], true) {
+		return false
+	}
+	for _, run := range runs[first+1 : last] {
+		ok := false
+		for _, r := range readings(run) {
+			if isOpaqueResponseProseFragment(r.text) && r.hasWord(r.text) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// opaqueStitchedLeetWordMinLetters is the shortest letter run that counts as
+// a word in a leetspeak-normalized stitched run.
+const opaqueStitchedLeetWordMinLetters = 4
+
+func hasOpaqueLeetWord(run string) bool {
+	for _, token := range strings.FieldsFunc(run, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		if utf8.RuneCountInString(token) >= opaqueStitchedLeetWordMinLetters {
+			return true
+		}
+	}
+	return false
+}
+
+// opaqueProseEdge returns the longest prose prefix of run when head is true,
+// or the longest prose suffix otherwise.
+func opaqueProseEdge(run string, head bool) string {
+	runes := []rune(run)
+	if head {
+		n := 0
+		for n < len(runes) && isOpaqueResponseProseRune(runes[n]) {
+			n++
+		}
+		return string(runes[:n])
+	}
+	n := len(runes)
+	for n > 0 && isOpaqueResponseProseRune(runes[n-1]) {
+		n--
+	}
+	return string(runes[n:])
+}
+
+func hasOpaqueResponseWord(run string) bool {
+	for _, token := range strings.FieldsFunc(run, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		uniform := strings.IndexFunc(token, unicode.IsDigit) < 0 || strings.IndexFunc(token, unicode.IsLetter) < 0
+		if (uniform && utf8.RuneCountInString(token) >= opaqueStitchedTokenMinRunes) || opaqueShortWords[strings.ToLower(token)] {
+			return true
+		}
+	}
+	return false
+}
+
+// filterResponseMatchesBySpan keeps the matches for which keep returns true.
+// keep receives the match with the rebuilt view it was found in and its byte
+// span, or located=false when the span cannot be placed in a rebuilt view. A
+// match that whole-content decoding joined across a newline is passed as the
+// one-newline view "\n" spanning that newline.
+func filterResponseMatchesBySpan(content string, result ResponseScanResult, keep func(match ResponseMatch, view string, start, end int, located bool) bool) ResponseScanResult {
 	if result.Failed() {
 		return result
 	}
@@ -316,33 +593,33 @@ func requireFragmentBoundaryMatch(content string, result ResponseScanResult) Res
 	}
 	views[ViewLeetspeak] = normalize.Leetspeak(views[ViewForMatching])
 	views[ViewVowelFold] = normalize.FoldVowels(views[ViewForMatching])
-	crossesBoundary := func(match ResponseMatch) bool {
+	keepMatch := func(match ResponseMatch) bool {
 		if match.crossesFragmentBoundary {
-			return true
+			return keep(match, "\n", 0, 1, true)
 		}
 		view, ok := views[match.span.ViewLabel]
 		if !ok || match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
-			return false
+			return keep(match, "", 0, 0, false)
 		}
-		return strings.ContainsRune(view[match.span.ByteStart:match.span.ByteEnd], '\n')
+		return keep(match, view, match.span.ByteStart, match.span.ByteEnd, true)
 	}
 	kept := result.Matches[:0]
 	for _, match := range result.Matches {
-		if crossesBoundary(match) {
+		if keepMatch(match) {
 			kept = append(kept, match)
 		}
 	}
 	result.Matches = kept
 	suppressed := result.SuppressedMatches[:0]
 	for _, match := range result.SuppressedMatches {
-		if crossesBoundary(match) {
+		if keepMatch(match) {
 			suppressed = append(suppressed, match)
 		}
 	}
 	result.SuppressedMatches = suppressed
 	observed := result.ObservedCoreMatches[:0]
 	for _, match := range result.ObservedCoreMatches {
-		if crossesBoundary(match.Match) {
+		if keepMatch(match.Match) {
 			observed = append(observed, match)
 		}
 	}
@@ -1405,10 +1682,17 @@ const binaryResponseTextRunMinBytes = 16
 const responseBodyContextCheckBytes = 4096
 
 type opaqueResponseTextViews struct {
-	retained   string
-	fragmented string
-	encoded    string
-	decoded    string
+	// retained holds substantive groups made only of prose characters.
+	retained string
+	// retainedMixed holds the other substantive groups. Each of its newlines
+	// is either a real line break or a synthetic separator, in order, as
+	// recorded by retainedMixedSynthetic. A match crossing a synthetic one
+	// was stitched from bytes the body never placed next to each other.
+	retainedMixed          string
+	retainedMixedSynthetic []bool
+	fragmented             string
+	encoded                string
+	decoded                string
 }
 
 // opaqueResponseTextView produces bounded scanner views from an opaque body.
@@ -1420,6 +1704,9 @@ type opaqueResponseTextViews struct {
 // A single short accidental token is excluded from both views.
 func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTextViews, error) {
 	var view strings.Builder
+	var mixedView strings.Builder
+	var mixedSynthetic []bool
+	var groupSynthetic []bool
 	var proseChain strings.Builder
 	var encodedChain strings.Builder
 	var encodedParts []string
@@ -1442,13 +1729,23 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 	}
 	flush := func() {
 		fragment := group.String()
+		prose := isOpaqueResponseProseFragment(fragment)
 		if printableBytes >= binaryResponseTextRunMinBytes {
-			if view.Len() > 0 {
-				view.WriteString("\n\ufffd\n")
+			if prose {
+				if view.Len() > 0 {
+					view.WriteString("\n\ufffd\n")
+				}
+				view.WriteString(withoutSyntheticSeparators(fragment, groupSynthetic))
+			} else {
+				if mixedView.Len() > 0 {
+					mixedView.WriteString("\n\ufffd\n")
+					mixedSynthetic = append(mixedSynthetic, true, true)
+				}
+				mixedView.WriteString(fragment)
+				mixedSynthetic = append(mixedSynthetic, groupSynthetic...)
 			}
-			view.WriteString(fragment)
 		}
-		if isOpaqueResponseProseFragment(fragment) {
+		if prose {
 			if proseFragments > 0 {
 				proseChain.WriteByte('\n')
 			}
@@ -1471,6 +1768,7 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			encodedParts = append(encodedParts, fragment)
 		}
 		group.Reset()
+		groupSynthetic = groupSynthetic[:0]
 		printableBytes = 0
 	}
 
@@ -1479,7 +1777,17 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			return opaqueResponseTextViews{}, err
 		}
 		r, size := utf8.DecodeRune(data[i:])
+		if size > 1 && unicode.Is(unicode.Cf, r) && group.Len() > 0 {
+			// Zero-width and other format characters are invisible in
+			// rendered text, so they neither end a group nor separate
+			// words inside it.
+			i += size
+			continue
+		}
 		if isPrintableResponseRune(r, size) {
+			if r == '\n' {
+				groupSynthetic = append(groupSynthetic, false)
+			}
 			group.Write(data[i : i+size])
 			printableBytes += size
 			i += size
@@ -1498,7 +1806,8 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			i += size
 		}
 		if i-separatorStart <= 8 && group.Len() > 0 {
-			group.WriteByte(' ')
+			group.WriteByte('\n')
+			groupSynthetic = append(groupSynthetic, true)
 			continue
 		}
 		flush()
@@ -1518,21 +1827,44 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 		encoded = encodedChain.String()
 	}
 	decoded := decodeOpaqueResponseFragments(encodedParts)
-	return opaqueResponseTextViews{retained: view.String(), fragmented: fragmented, encoded: encoded, decoded: decoded}, nil
+	return opaqueResponseTextViews{retained: view.String(), retainedMixed: mixedView.String(), retainedMixedSynthetic: mixedSynthetic, fragmented: fragmented, encoded: encoded, decoded: decoded}, nil
+}
+
+// withoutSyntheticSeparators turns the synthetic separators in a group back
+// into spaces and keeps its real line breaks.
+func withoutSyntheticSeparators(group string, synthetic []bool) string {
+	var b strings.Builder
+	b.Grow(len(group))
+	n := 0
+	for i := 0; i < len(group); i++ {
+		if group[i] == '\n' {
+			if n < len(synthetic) && synthetic[n] {
+				b.WriteByte(' ')
+				n++
+				continue
+			}
+			n++
+		}
+		b.WriteByte(group[i])
+	}
+	return b.String()
 }
 
 func isOpaqueResponseProseFragment(fragment string) bool {
 	hasLetterOrDigit := false
 	for _, r := range fragment {
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r):
-			hasLetterOrDigit = true
-		case unicode.IsSpace(r), strings.ContainsRune(".,;:!?'-()[]{}\"/", r):
-		default:
+		if !isOpaqueResponseProseRune(r) {
 			return false
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			hasLetterOrDigit = true
 		}
 	}
 	return hasLetterOrDigit
+}
+
+func isOpaqueResponseProseRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) || strings.ContainsRune(".,;:!?'-()[]{}\"/", r)
 }
 
 func isOpaqueResponseEncodedFragment(fragment string) bool {

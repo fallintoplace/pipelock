@@ -15,6 +15,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -680,7 +681,7 @@ func TestScanResponseBody_UTF16DecodeCancellationFailsClosed(t *testing.T) {
 func TestOpaqueResponseTextViewObservesCancellationDuringExtraction(t *testing.T) {
 	ctx := &cancelAfterErrChecksContext{Context: context.Background(), cancelAfter: 3}
 	views, err := opaqueResponseTextView(ctx, bytes.Repeat([]byte{0xff}, responseBodyContextCheckBytes*3))
-	if !errors.Is(err, context.Canceled) || views != (opaqueResponseTextViews{}) {
+	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(views, opaqueResponseTextViews{}) {
 		t.Fatalf("opaque extraction returned views=%+v err=%v, want cancellation", views, err)
 	}
 }
