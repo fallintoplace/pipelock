@@ -5031,15 +5031,14 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 		// Kill switch: deny all requests when active (except exempt endpoints/IPs).
 		if p.ks != nil {
 			if d := p.ks.IsActiveHTTP(r); d.Active {
-				clientIP, _ := requestMeta(r)
-				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP)
+				clientIP, requestID := requestMeta(r)
+				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP, requestID)
 				p.metrics.RecordKillSwitchDenial(schemeHTTP, r.URL.Path)
 				if r.URL.IsAbs() && r.URL.Host != "" {
 					// Absolute-URI forward proxy requests bypass
 					// handleForwardHTTP entirely under kill switch,
 					// so emit a forward receipt here to keep the
 					// audit chain unbroken.
-					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 					actionID := receipt.NewActionID()
 					if p.emitRecordedReceipt(forwardKillSwitchReceiptOpts(
 						actionID,
@@ -5050,10 +5049,11 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 						blockreason.SetRecordedReceipt(w.Header(), actionID)
 					}
 					writeBlockedError(w,
-						blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
+						blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(requestID),
 						"blocked: kill_switch_active", http.StatusForbidden)
 					return
 				}
+				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(requestID).SetHeaders(w.Header())
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(w).Encode(map[string]string{
@@ -5352,7 +5352,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogError(audit.NewMethodLogContext(r.Method),
 			fmt.Errorf("inbound envelope verify rejected fetch: %w", err))
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				Blocked:    true,
 				Error:      "inbound mediation envelope verification failed",
@@ -5382,7 +5382,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable).WithRequestID(requestID),
 			http.StatusServiceUnavailable, FetchResponse{
 				Blocked:    true,
 				Error:      scannerPatternUnavailable,
@@ -5451,7 +5451,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5518,7 +5518,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Pattern: session.ErrCapacity.Error(), Transport: TransportFetch,
 				Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
 			})
-			writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable,
+			writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), http.StatusServiceUnavailable,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error()})
 			return
 		}
@@ -5542,7 +5542,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAirlockDeny(fetchSess.key, tier, TransportFetch, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportFetch, "read")
 				writeBlockedJSON(w,
-					blockInfoFor(blockreason.AirlockActive, ""),
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
 					http.StatusForbidden, FetchResponse{
 						URL: displayURL, Agent: agent, Blocked: true,
 						BlockReason: "session in airlock drain",
@@ -5618,7 +5618,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() {
 				resp.Hint = result.Hint
 			}
-			writeBlockedJSON(w, blockInfoForResult(result), status, resp)
+			writeBlockedJSON(w, blockInfoForResult(result).WithRequestID(requestID), status, resp)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -5662,7 +5662,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				escalatedEchoURL = audit.RedactContentBearingURL(displayURL)
 			}
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer).WithRequestID(requestID),
 				escalatedStatus, FetchResponse{
 					URL:         escalatedEchoURL,
 					Agent:       agent,
@@ -5702,7 +5702,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			info, status, FetchResponse{
+			info.WithRequestID(requestID), status, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
@@ -5740,7 +5740,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5763,7 +5763,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5852,7 +5852,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+			blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5895,7 +5895,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
+			blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -5933,7 +5933,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.DataBudget, "budget"),
+			blockInfoFor(blockreason.DataBudget, "budget").WithRequestID(requestID),
 			http.StatusTooManyRequests, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -6025,7 +6025,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+				blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(requestID),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6047,7 +6047,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					Pattern: session.ErrCapacity.Error(), Transport: TransportFetch,
 					Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
 				})
-				writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), http.StatusServiceUnavailable,
+				writeBlockedJSON(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), http.StatusServiceUnavailable,
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: session.ErrCapacity.Error(), Layer: sessionCapacityLayer})
 				return
 			}
@@ -6074,7 +6074,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveEnforcementLayer).WithRequestID(requestID),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6108,7 +6108,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		},
 	}); rpRes.Block {
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
-		writeBlockedJSON(w, rpRes.Info, http.StatusForbidden, FetchResponse{
+		writeBlockedJSON(w, rpRes.Info.WithRequestID(requestID), http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
 			Blocked:     true,
@@ -6166,7 +6166,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:       agent,
 			Blocked:     true,
 			BlockReason: reason,
-		})
+		}, requestID)
 		return
 	}
 	if err := p.authorizeForward(r.Context(), authorityRef, authorityCarrierErr, authority.Request{
@@ -6198,7 +6198,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerAuthority, time.Since(start), agentLabel)
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+			blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -6283,7 +6283,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(requestID),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6328,7 +6328,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6374,7 +6374,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
-				ssrfErr.blockInfo(),
+				ssrfErr.blockInfo().WithRequestID(requestID),
 				http.StatusForbidden, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6429,7 +6429,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: redirectTaint.TaskOverrideApplied,
 			})
 			writeBlockedJSON(w,
-				redirectBlockedInfo(blockedErr),
+				redirectBlockedInfo(blockedErr).WithRequestID(requestID),
 				http.StatusForbidden, resp)
 			outcomeStatus = strconv.Itoa(http.StatusForbidden)
 			outcomeReason = blockedErr.layer
@@ -6465,7 +6465,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.CompressedResponse, responseScanLayer),
+			blockInfoFor(blockreason.CompressedResponse, responseScanLayer).WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -6524,7 +6524,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.ResponseSize, "response_size"),
+				blockInfoFor(blockreason.ResponseSize, "response_size").WithRequestID(requestID),
 				http.StatusBadGateway, FetchResponse{
 					URL:         displayURL,
 					Agent:       agent,
@@ -6552,7 +6552,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.DataBudget, "budget"),
+			blockInfoFor(blockreason.DataBudget, "budget").WithRequestID(requestID),
 			http.StatusTooManyRequests, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -6603,7 +6603,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			shieldBlocked.info,
+			shieldBlocked.info.WithRequestID(requestID),
 			shieldBlocked.status, FetchResponse{
 				URL: displayURL, Agent: agent, Blocked: true,
 				BlockReason: reason,
@@ -6642,7 +6642,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.MediaPolicy, ""),
+			blockInfoFor(blockreason.MediaPolicy, "").WithRequestID(requestID),
 			http.StatusForbidden, FetchResponse{
 				URL: displayURL, Agent: agent, Blocked: true,
 				BlockReason: mediaVerdict.BlockReason,
@@ -6656,7 +6656,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if cfg.FlightRecorder.RequireReceipts {
 			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
-				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
+				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 				outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
 				return
 			}
@@ -6750,7 +6750,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.PromptInjection, ""),
+			blockInfoFor(blockreason.PromptInjection, "").WithRequestID(requestID),
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
@@ -7011,7 +7011,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			Transport: "fetch", Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.ParseError, "response_scan_error"),
+			blockInfoFor(blockreason.ParseError, "response_scan_error").WithRequestID(requestID),
 			http.StatusServiceUnavailable,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", false, "response_scan_error"
@@ -7094,7 +7094,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			Agent:     agent,
 		})
 		writeBlockedJSON(w,
-			blockInfoFor(blockreason.PromptInjection, responseScanLayer),
+			blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(requestID),
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", true, ""
@@ -7115,7 +7115,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
+				blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(requestID),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true, ""
@@ -7145,7 +7145,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 					Transport: "fetch", Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
 				})
 				writeBlockedJSON(w,
-					blockInfoFor(blockreason.PromptInjection, responseScanLayer),
+					blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(requestID),
 					http.StatusForbidden,
 					FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 				return true, "", true, ""
@@ -7169,7 +7169,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, responseScanLayer),
+				blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(requestID),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true, ""
@@ -7194,7 +7194,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		}, firstReceiptShard(in.shard, receiptShardFromContext(reqCtx))))
 		if err != nil {
 			p.recordRequiredReceiptBlock(err, TransportFetch)
-			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), http.StatusForbidden,
+			writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
 			return true, "", true, receiptEmissionFailedLayer
 		}

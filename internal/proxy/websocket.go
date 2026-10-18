@@ -216,7 +216,7 @@ func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err
 		RequestID: r.requestID,
 		Agent:     r.agent,
 	})
-	closePayload := blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).CloseFramePayload()
+	closePayload := blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(r.requestID).CloseFramePayload()
 	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 	return true
@@ -336,7 +336,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope).WithRequestID(requestID),
 			"inbound mediation envelope verification failed", http.StatusForbidden)
 		return
 	}
@@ -348,7 +348,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer releaseScanner()
 	r, correlation := attachRequestCorrelation(r, cfg, sc)
 	if !scOK {
-		_, requestID := requestMeta(r)
 		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
 		emitWebSocketReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
@@ -362,14 +361,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable).WithRequestID(requestID),
 			scannerPatternUnavailable, http.StatusServiceUnavailable)
 		return
 	}
 
 	if !cfg.WebSocketProxy.Enabled {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.NotEnabled, ""),
+			blockInfoFor(blockreason.NotEnabled, "").WithRequestID(requestID),
 			"WebSocket proxy not enabled", http.StatusNotFound)
 		return
 	}
@@ -381,7 +380,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	targetURL := extractTargetURL(r)
 	if targetURL == "" {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.BadRequest, ""),
+			blockInfoFor(blockreason.BadRequest, "").WithRequestID(requestID),
 			"missing 'url' query parameter", http.StatusBadRequest)
 		return
 	}
@@ -391,7 +390,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	parsed, err := url.Parse(targetURL)
 	if err != nil || (parsed.Scheme != "ws" && parsed.Scheme != "wss") {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.SchemeBlocked, scanner.ScannerScheme),
+			blockInfoFor(blockreason.SchemeBlocked, scanner.ScannerScheme).WithRequestID(requestID),
 			"invalid URL: must be ws or wss", http.StatusBadRequest)
 		return
 	}
@@ -421,7 +420,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 			"blocked: "+blockedErr.reason, http.StatusForbidden)
 		return
 	}
@@ -497,7 +496,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			writeBlockedError(w, blockInfoForResult(result),
+			writeBlockedError(w, blockInfoForResult(result).WithRequestID(requestID),
 				"WebSocket blocked: "+result.Reason, status)
 			return
 		}
@@ -523,7 +522,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeBlockedError(w, blockInfoForResult(result),
+			writeBlockedError(w, blockInfoForResult(result).WithRequestID(requestID),
 				"WebSocket "+adaptiveBlockedReason, status)
 			return
 		}
@@ -549,7 +548,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			info, sr.Detail, status)
+			info.WithRequestID(requestID), sr.Detail, status)
 		return
 	}
 
@@ -571,7 +570,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.EscalationLevel, ""),
+			blockInfoFor(blockreason.EscalationLevel, "").WithRequestID(requestID),
 			"WebSocket "+adaptiveBlockedReason,
 			http.StatusForbidden)
 		return
@@ -595,7 +594,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit),
+			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit).WithRequestID(requestID),
 			"WebSocket blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
@@ -604,7 +603,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	sem := getWSSemaphore(cfg.WebSocketProxy.MaxConcurrentConnections)
 	if !sem.TryAcquire() {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit),
+			blockInfoFor(blockreason.RateLimit, scanner.ScannerRateLimit).WithRequestID(requestID),
 			"too many active WebSocket connections", http.StatusServiceUnavailable)
 		return
 	}
@@ -620,7 +619,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 			"blocked: "+blockedErr.reason, http.StatusForbidden)
 		return
 	}
@@ -696,7 +695,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeBlockedError(w, info, headerSR.Detail, status)
+			writeBlockedError(w, info.WithRequestID(requestID), headerSR.Detail, status)
 			return
 		}
 		if wsHeaderBlocked {
@@ -718,7 +717,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.DLPMatch, "dlp_header"),
+				blockInfoFor(blockreason.DLPMatch, "dlp_header").WithRequestID(requestID),
 				"WebSocket blocked: "+reason, http.StatusForbidden)
 			return
 		}
@@ -741,7 +740,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, ""),
+				blockInfoFor(blockreason.EscalationLevel, "").WithRequestID(requestID),
 				"WebSocket "+adaptiveBlockedReason,
 				http.StatusForbidden)
 			return
@@ -785,7 +784,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:      agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+				blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(requestID),
 				"WebSocket blocked: "+ceeRes.Reason, http.StatusForbidden)
 			return
 		}
@@ -803,7 +802,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					Method: http.MethodGet, Target: targetURL, RequestID: requestID, Agent: agent,
 				})
 				p.metrics.RecordWSBlocked()
-				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 				return
 			}
 			level := recEscalationLevel(ceeRec)
@@ -822,7 +821,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:      agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
 				"WebSocket "+adaptiveBlockedReason, http.StatusForbidden)
 			return
 		}
@@ -851,7 +850,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		DeferBodyPredicate: true,
 	}); rpRes.Block {
 		p.metrics.RecordWSBlocked()
-		writeBlockedError(w, rpRes.Info, "WebSocket blocked by request policy: "+rpRes.Reason, http.StatusForbidden)
+		writeBlockedError(w, rpRes.Info.WithRequestID(requestID), "WebSocket blocked by request policy: "+rpRes.Reason, http.StatusForbidden)
 		return
 	}
 
@@ -889,7 +888,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		}))
-		writeGateBlockedError(w, gate, "WebSocket blocked: "+reason)
+		writeGateBlockedError(w, gate, "WebSocket blocked: "+reason, requestID)
 		return
 	}
 
@@ -951,9 +950,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID, Agent: agent,
 			})
 			if clientConn != nil {
-				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, info.CloseFramePayload())
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, info.WithRequestID(requestID).CloseFramePayload())
 			} else {
-				writeBlockedError(w, info, session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+				writeBlockedError(w, info.WithRequestID(requestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 			}
 			return
 		}
@@ -984,10 +983,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			if clientConn != nil {
 				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-					blockInfoFor(blockreason.AirlockActive, "").CloseFramePayload())
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID).CloseFramePayload())
 			} else {
 				writeBlockedError(w,
-					blockInfoFor(blockreason.AirlockActive, ""),
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
 					"WebSocket blocked: airlock: WebSocket blocked during quarantine", http.StatusForbidden)
 			}
 			return
@@ -1012,10 +1011,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordWSBlocked()
 		if clientConn != nil {
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority).CloseFramePayload())
+				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority).WithRequestID(requestID).CloseFramePayload())
 		} else {
 			writeBlockedError(w,
-				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority),
+				blockInfoFor(blockreason.AuthorityMismatch, blockLayerAuthority).WithRequestID(requestID),
 				"WebSocket blocked: authority verification failed", http.StatusForbidden)
 		}
 		return
@@ -1066,10 +1065,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			if clientConn != nil {
 				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(requestID).CloseFramePayload())
 			} else {
 				writeBlockedError(w,
-					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(requestID),
 					"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			}
 			return
@@ -1105,10 +1104,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			if clientConn != nil {
 				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(requestID).CloseFramePayload())
 			} else {
 				writeBlockedError(w,
-					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(requestID),
 					"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			}
 			return
@@ -1121,7 +1120,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
 			writeBlockedError(w,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				"WebSocket blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
@@ -1172,7 +1171,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().CloseFramePayload())
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, ssrfErr.blockInfo().WithRequestID(requestID).CloseFramePayload())
 			outcomeStatus = strconv.Itoa(int(ws.StatusPolicyViolation))
 			outcomeBytes = 0
 			outcomeReason = string(ssrfErr.reason)
@@ -1675,7 +1674,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	if !res.Block {
 		return false
 	}
-	payload := res.Info.CloseFramePayload()
+	payload := res.Info.WithRequestID(r.requestID).CloseFramePayload()
 	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
 	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
 	return true
@@ -1966,7 +1965,7 @@ func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanne
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-			blockInfoFor(blockreason.RedactionFailure, scannerLabelRedaction).CloseFramePayload())
+			blockInfoFor(blockreason.RedactionFailure, scannerLabelRedaction).WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
 		return true
 	}
@@ -2078,7 +2077,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 			return true
 		}
@@ -2111,7 +2110,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 			return true
 		}
@@ -2179,7 +2178,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
@@ -2203,7 +2202,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
@@ -2435,7 +2434,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 			RedactionReport:  result.RedactionReport,
 		})
-		closePayload := blockInfoFor(closeBlockReason, receiptLayer).CloseFramePayload()
+		closePayload := blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID).CloseFramePayload()
 		_ = closeReason // free-text closeReason kept for receipt logging above
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
@@ -2514,7 +2513,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 			RedactionReport:  result.RedactionReport,
 		})
-		closePayload := blockInfoFor(closeBlockReason, receiptLayer).CloseFramePayload()
+		closePayload := blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID).CloseFramePayload()
 		_ = closeReason // free-text closeReason kept for receipt logging above
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
@@ -3121,7 +3120,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		if err != nil {
 			r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 			log.LogError(actx, fmt.Errorf("confirm WebSocket response receipt: %w", err))
-			payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+			payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
 			return nil, true
@@ -3146,7 +3145,7 @@ func (r *wsRelay) denySessionCapacity(direction string) {
 	})
 	r.proxy.metrics.RecordWSBlocked()
 	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).CloseFramePayload())
+		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(r.requestID).CloseFramePayload())
 }
 
 func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
@@ -3492,7 +3491,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				if r.cfg.FlightRecorder.RequireReceipts {
 					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, r.receiptShard))); err != nil {
 						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
-						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).CloseFramePayload()
+						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
 						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
 						blocked = true

@@ -28,16 +28,20 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
 
 // HTTP response headers emitted on every block.
 const (
-	HeaderReason   = "X-Pipelock-Block-Reason"
-	HeaderVersion  = "X-Pipelock-Block-Reason-Version"
-	HeaderSeverity = "X-Pipelock-Block-Reason-Severity"
-	HeaderRetry    = "X-Pipelock-Block-Reason-Retry"
-	HeaderLayer    = "X-Pipelock-Block-Reason-Layer"
-	HeaderReceipt  = "X-Pipelock-Block-Reason-Receipt"
+	HeaderReason    = "X-Pipelock-Block-Reason"
+	HeaderVersion   = "X-Pipelock-Block-Reason-Version"
+	HeaderSeverity  = "X-Pipelock-Block-Reason-Severity"
+	HeaderRetry     = "X-Pipelock-Block-Reason-Retry"
+	HeaderLayer     = "X-Pipelock-Block-Reason-Layer"
+	HeaderReceipt   = "X-Pipelock-Block-Reason-Receipt"
+	HeaderRequestID = "X-Pipelock-Request-ID"
+	HeaderOperator  = "X-Pipelock-Operator"
 	// HeaderRecordedReceipt carries the action_id of a receipt that was
 	// successfully recorded before this response was written. It is additive
 	// metadata and must never be treated as proof without verifying the signed
@@ -266,11 +270,22 @@ var (
 // fields for tests; do not rely on direct struct construction outside this
 // package's tests.
 type Info struct {
-	Reason   Reason
-	Severity Severity
-	Retry    Retry
-	Layer    string
-	Receipt  string
+	Reason    Reason
+	Severity  Severity
+	Retry     Retry
+	Layer     string
+	Receipt   string
+	RequestID string
+}
+
+// WithRequestID attaches the ID recorded for this block. Invalid IDs clear
+// the field so arbitrary text cannot reach headers or close-frame metadata.
+func (i Info) WithRequestID(requestID string) Info {
+	i.RequestID = ""
+	if receiptcontent.ValidRequestID(requestID) {
+		i.RequestID = requestID
+	}
+	return i
 }
 
 // New constructs an Info, validating reason / severity / retry against the
@@ -438,6 +453,12 @@ func isRFC4122VariantByte(c byte) bool {
 // violation; the headers still emit but downstream consumers may treat
 // the block as malformed.
 func (i Info) SetHeaders(h http.Header) {
+	h.Del(HeaderRequestID)
+	h.Del(HeaderOperator)
+	if receiptcontent.ValidRequestID(i.RequestID) {
+		h.Set(HeaderRequestID, i.RequestID)
+		h.Set(HeaderOperator, "pipelock explain event "+i.RequestID)
+	}
 	h.Set(HeaderReason, string(i.Reason))
 	h.Set(HeaderVersion, SchemaVersion)
 	h.Set(HeaderSeverity, string(i.Severity))
@@ -501,7 +522,7 @@ func FromHeader(h http.Header) (Info, bool) {
 	if receipted, receiptErr := info.WithReceipt(h.Get(HeaderReceipt)); receiptErr == nil {
 		info = receipted
 	}
-	return info, true
+	return info.WithRequestID(h.Get(HeaderRequestID)), true
 }
 
 // SetRecordedReceipt sets the caller-correlation header only for a valid
@@ -531,6 +552,7 @@ type closeFramePayload struct {
 	Retry       string `json:"retry,omitempty"`
 	Layer       string `json:"layer,omitempty"`
 	Receipt     string `json:"receipt,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
 }
 
 // closeFrameMaxBytes is RFC 6455's close-frame reason payload limit (125 bytes
@@ -546,7 +568,7 @@ const closeFrameOverflowFallback = `{"block_reason":"block_reason_overflow","ver
 // CloseFramePayload returns a JSON document for the WebSocket close-frame
 // Reason field. The result is GUARANTEED to be at most closeFrameMaxBytes
 // bytes (RFC 6455's 123-byte ceiling). To honor the ceiling, optional
-// fields drop in this order: receipt, layer, retry, severity, version.
+// fields drop in this order: receipt, layer, retry, severity, version, request_id.
 // If even the bare {"block_reason":"<code>"} would overflow because the
 // Reason value is unusually long, CloseFramePayload returns
 // closeFrameOverflowFallback (block_reason_overflow). The fallback
@@ -567,6 +589,9 @@ func (i Info) CloseFramePayload() string {
 		Layer:       i.Layer,
 		Receipt:     i.Receipt,
 	}
+	if receiptcontent.ValidRequestID(i.RequestID) {
+		p.RequestID = i.RequestID
+	}
 	out := mustMarshal(p)
 	if len(out) <= closeFrameMaxBytes {
 		return out
@@ -577,6 +602,7 @@ func (i Info) CloseFramePayload() string {
 		func(p *closeFramePayload) { p.Retry = "" },
 		func(p *closeFramePayload) { p.Severity = "" },
 		func(p *closeFramePayload) { p.Version = "" },
+		func(p *closeFramePayload) { p.RequestID = "" },
 	}
 	for _, drop := range dropFields {
 		drop(&p)

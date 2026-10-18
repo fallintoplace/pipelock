@@ -8,6 +8,10 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 
 ## Header set
 
+Blocked proxy HTTP responses include `X-Pipelock-Request-ID` with the ID recorded for the block and `X-Pipelock-Operator` with exactly `pipelock explain event <id>`. This includes WebSocket handshake refusals and both the absolute-URI 403 and JSON 503 kill-switch responses. These headers do not depend on the opt-in `explain_blocks` setting, which still controls additional prose hints. Verdicts, status codes, and schema version 1 are unchanged.
+
+The ID must match the shared `receiptcontent.ValidRequestID` shape: `req-` followed by a lowercase canonical UUIDv7 or a decimal fallback counter. Both headers are omitted when the recorded ID is empty or malformed. Pipelock supplies its recorded ID; it never copies a client header or request URL into these fields. Shape validation is not proof of origin or a signed receipt.
+
 | Header | Required | Example | Meaning |
 |---|---|---|---|
 | `X-Pipelock-Block-Reason` | yes (on every block) | `dlp_match` | Machine-readable reason code. See vocabulary below. |
@@ -199,7 +203,7 @@ WebSocket blocks happen via close frames, not response headers. The close-frame 
 }
 ```
 
-Per RFC 6455 the close-frame reason payload is limited to 123 bytes. Agents should plan for truncation: if the JSON would exceed the limit, fields drop in this order — `receipt`, `layer`, `retry`, `severity`, `version` — leaving `block_reason` as the always-present floor.
+Per RFC 6455 the close-frame reason payload is limited to 123 bytes. A block payload also carries `request_id` when its recorded ID matches the shared shape and fits alongside `block_reason`. If the JSON exceeds the limit, fields drop in this order: `receipt`, `layer`, `retry`, `severity`, `version`, `request_id`. The reason is never dropped to make room for the ID. After upgrade there are no HTTP headers; the operator can run `pipelock explain event <request_id>` using the surviving ID.
 
 MCP stdio is not covered. There is no HTTP layer to attach headers to; MCP-stdio errors flow through the JSON-RPC error envelope. Block-reason taxonomy in JSON-RPC errors is tracked separately.
 

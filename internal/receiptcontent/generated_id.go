@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"regexp"
 
 	"github.com/google/uuid"
 )
@@ -50,6 +51,14 @@ func NewGeneratedID() GeneratedID {
 // generated ID in it, so a request ID keeps its familiar shape and still
 // carries this process's origin proof.
 const RequestIDPrefix = "req-"
+
+var requestIDRE = regexp.MustCompile(`^req-(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`)
+
+// ValidRequestID reports whether s has the proxy's request ID shape: a
+// lowercase UUIDv7 or a decimal fallback counter after RequestIDPrefix.
+// It checks spelling only, not whether this process minted the identifier.
+// Callers must supply the recorded ID, never a client-provided value.
+func ValidRequestID(s string) bool { return requestIDRE.MatchString(s) }
 
 // NewRequestID mints a proxy request ID carrying this process's origin
 // proof. It returns "" if the system random source fails; the caller then

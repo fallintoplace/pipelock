@@ -320,12 +320,12 @@ func contractEvaluationFailedGate() ContractGateOutput {
 	}
 }
 
-func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
-	writeBlockedError(w, gateBlockedInfo(gate), body, http.StatusForbidden)
+func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body, requestID string) {
+	writeBlockedError(w, gateBlockedInfo(gate).WithRequestID(requestID), body, http.StatusForbidden)
 }
 
-func writeGateBlockedJSON(w http.ResponseWriter, gate ContractGateOutput, status int, resp FetchResponse) {
-	writeBlockedJSON(w, gateBlockedInfo(gate), status, resp)
+func writeGateBlockedJSON(w http.ResponseWriter, gate ContractGateOutput, status int, resp FetchResponse, requestID string) {
+	writeBlockedJSON(w, gateBlockedInfo(gate).WithRequestID(requestID), status, resp)
 }
 
 func scannerVerdictForGate(hasFinding bool) string {

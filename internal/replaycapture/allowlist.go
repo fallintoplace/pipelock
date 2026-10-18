@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
 
 // The public-safe field allowlist is the load-bearing privacy control for the
@@ -54,15 +55,9 @@ var reservedHostExact = map[string]struct{}{
 // unexpected leaked, and the gate fails closed.
 var safeEnumRE = regexp.MustCompile(`^[a-z0-9_]+$`)
 
-// safeRequestIDRE matches pipelock's own internal request id: a "req-" prefix
-// followed by a random UUIDv7 or, when one could not be minted, a counter.
-// Neither carries provider/account correlation or private data. Any other
-// shape (e.g. a real provider request id) is rejected.
-var safeRequestIDRE = regexp.MustCompile(`^req-(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$`)
-
 // safeMCPRequestIDRE permits the bounded synthetic JSON-RPC ids used by the
 // replay lab. It is consulted only for MCP transports; HTTP receipt request ids
-// remain constrained to safeRequestIDRE.
+// remain constrained to receiptcontent.ValidRequestID.
 var safeMCPRequestIDRE = regexp.MustCompile(`^(?:[0-9]{1,9}|"[a-z0-9_-]{1,32}")$`)
 
 // safeRunNonceRE matches the per-process receipt nonce emitted as 16 random
@@ -126,7 +121,7 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	}
 
 	// request_id, when present, must be pipelock's own internal request id shape.
-	requestIDSafe := safeRequestIDRE.MatchString(ar.RequestID)
+	requestIDSafe := receiptcontent.ValidRequestID(ar.RequestID)
 	if strings.HasPrefix(ar.Transport, "mcp_") {
 		requestIDSafe = requestIDSafe || safeMCPRequestIDRE.MatchString(ar.RequestID)
 	}

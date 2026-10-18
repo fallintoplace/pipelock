@@ -834,7 +834,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		})
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable).WithRequestID(requestID),
 			scannerPatternUnavailable)
 		return
 	}
@@ -910,7 +910,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope).WithRequestID(requestID),
 			"inbound mediation envelope verification failed")
 		return
 	}
@@ -956,14 +956,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Agent:     agent,
 			}))
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
+				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(requestID),
 				reason)
 			return
 		}
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 		rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-			blockInfoFor(blockreason.KillSwitchActive, ""),
+			blockInfoFor(blockreason.KillSwitchActive, "").WithRequestID(requestID),
 			"kill switch active")
 		return
 	}
@@ -976,7 +976,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if gate := evaluateSubmitProfileGate(cfg, r); !gate.Allowed {
 		rp.metrics.RecordReverseProxyRequest(r.Method, strconv.Itoa(gate.Status))
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
-		writeReverseProxyBlock(w, gate.Status, gate.Block, gate.Reason)
+		writeReverseProxyBlock(w, gate.Status, gate.Block.WithRequestID(requestID), gate.Reason)
 		return
 	}
 
@@ -995,7 +995,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				blockedErr.reason)
 			return
 		}
@@ -1007,7 +1007,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				reason = "submit profile: upstream URL scan denied"
 			}
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoForResult(urlResult),
+				blockInfoForResult(urlResult).WithRequestID(requestID),
 				reason)
 			return
 		}
@@ -1033,7 +1033,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				blockedErr.reason)
 			return
 		}
@@ -1116,7 +1116,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Agent:     agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(requestID),
 					reason)
 				return
 			}
@@ -1146,7 +1146,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				blockedErr.reason)
 			return
 		}
@@ -1183,7 +1183,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Agent:     agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(requestID),
 					reason)
 				return
 			}
@@ -1212,7 +1212,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Agent:     agent,
 			})
 			writeReverseProxyBlock(w, http.StatusRequestEntityTooLarge,
-				blockInfoFor(blockreason.DataBudget, scanner.ScannerDataBudget), reason)
+				blockInfoFor(blockreason.DataBudget, scanner.ScannerDataBudget).WithRequestID(requestID), reason)
 			return
 		}
 
@@ -1234,7 +1234,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Agent:     agent,
 			})
 			writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-				blockInfoFor(blockreason.DataBudget, reverseRequestScanInflightBudgetLabel), reason)
+				blockInfoFor(blockreason.DataBudget, reverseRequestScanInflightBudgetLabel).WithRequestID(requestID), reason)
 			return
 		}
 		defer releaseRequestScan()
@@ -1295,7 +1295,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.AirlockActive, ""), reason)
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID), reason)
 				return true
 			}
 		}
@@ -1340,7 +1340,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				RequestID: requestID,
 				Agent:     agent,
 			})
-			writeReverseProxyBlock(w, status, info, sessionResult.Detail)
+			writeReverseProxyBlock(w, status, info.WithRequestID(requestID), sessionResult.Detail)
 			return
 		}
 		// Admission reads the same scoped state that request findings and
@@ -1369,7 +1369,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Agent:     agent,
 			})
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
 				adaptiveBlockedReason)
 			return
 		}
@@ -1393,7 +1393,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, sessionCapacityLayer)
 				writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-					blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error())
+					blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error())
 				return
 			}
 			reverseTaintRec = sess
@@ -1440,7 +1440,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					TaskOverrideApplied: reverseTaint.TaskOverrideApplied,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.AuthorityMismatch, "taint_policy"),
+					blockInfoFor(blockreason.AuthorityMismatch, "taint_policy").WithRequestID(requestID),
 					reason)
 			}
 			switch reverseTaint.Result.Decision {
@@ -1503,7 +1503,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Agent:      agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(requestID),
 					ceeRes.Reason)
 				return
 			}
@@ -1518,7 +1518,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 					rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, sessionCapacityLayer)
 					writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-						blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error())
+						blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(requestID), session.ErrCapacity.Error())
 					return
 				}
 				level := recEscalationLevel(ceeRec)
@@ -1537,7 +1537,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Agent:     agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
 					adaptiveBlockedReason)
 				return
 			}
@@ -1585,7 +1585,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if rpRes := rp.reqPolicyPrepareFn(r, &rpInput); rpRes.Block {
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerRequestPolicy)
-				writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info, "blocked by request policy: "+rpRes.Reason)
+				writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info.WithRequestID(requestID), "blocked by request policy: "+rpRes.Reason)
 				return
 			}
 			reverseBodyBytes = rpInput.Body
@@ -1593,7 +1593,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		if rpRes := rp.reqPolicyFn(rpInput); rpRes.Block {
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerRequestPolicy)
-			writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info, "blocked by request policy: "+rpRes.Reason)
+			writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info.WithRequestID(requestID), "blocked by request policy: "+rpRes.Reason)
 			return
 		}
 	}
@@ -1624,7 +1624,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		}))
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract),
+			blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract).WithRequestID(requestID),
 			"contract evaluation failed")
 		return
 	}
@@ -1652,7 +1652,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			RequestID: requestID,
 			Agent:     agent,
 		}))
-		writeReverseProxyBlock(w, http.StatusForbidden, info, reason)
+		writeReverseProxyBlock(w, http.StatusForbidden, info.WithRequestID(requestID), reason)
 		return
 	}
 
@@ -1685,7 +1685,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
 			writeReverseProxyBlock(w, http.StatusForbidden,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
 				blockedErr.reason)
 			return
 		}
@@ -2014,7 +2014,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), blockedErr.layer, blockedErr.detail)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(receiptInput.RequestID),
 			blockedErr.reason)
 		return true, config.ActionBlock, nil, true
 	}
@@ -2175,7 +2175,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(bodyBlockReason, layer),
+			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
 		return true, config.ActionBlock, nil, true
 	}
@@ -2196,7 +2196,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(bodyBlockReason, layer),
+			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
 		return true, config.ActionBlock, nil, true
 	}
@@ -3623,7 +3623,7 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
 		rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		written := writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer),
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer).WithRequestID(requestID),
 			blockedErr.reason)
 		recordErrorOutcome(http.StatusForbidden, written, blockedErr.layer)
 		return
@@ -3655,7 +3655,7 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		if rp.emitRecordedReceipt(withReceiptShard(opts, receiptShardFromContext(r.Context()))) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
-		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo(), string(ssrfErr.reason))
+		written := writeReverseProxyBlock(w, http.StatusForbidden, ssrfErr.blockInfo().WithRequestID(requestID), string(ssrfErr.reason))
 		recordErrorOutcome(http.StatusForbidden, written, string(ssrfErr.reason))
 		return
 	}
@@ -3730,6 +3730,10 @@ func replaceWithMediaBlockResponse(resp *http.Response, reason string, info bloc
 	}
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Length", strconv.Itoa(len(blockBody)))
+	if resp.Request != nil {
+		requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
+		info = info.WithRequestID(requestID)
+	}
 	// The block-reason header set is part of the block contract on every
 	// transport. It is applied after the upstream headers are cleared so an
 	// upstream cannot pre-empt or forge it, and so no response block on this
@@ -3791,6 +3795,10 @@ func replaceWithBlockReason(resp *http.Response, reason string, info blockreason
 	}
 	resp.Header.Set("Content-Type", "application/json")
 	resp.Header.Set("Content-Length", strconv.Itoa(len(blockBody)))
+	if resp.Request != nil {
+		requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
+		info = info.WithRequestID(requestID)
+	}
 	// The block-reason header set is part of the block contract on every
 	// transport. It is applied after the upstream headers are cleared so an
 	// upstream cannot pre-empt or forge it, and so no response block on this

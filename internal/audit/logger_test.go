@@ -2803,7 +2803,7 @@ func TestLogKillSwitchDeny_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogKillSwitchDeny("http", "https://api.example.com/v1/chat", "global", "all traffic halted", "10.0.0.5")
+	logger.LogKillSwitchDeny("http", "https://api.example.com/v1/chat", "global", "all traffic halted", "10.0.0.5", "req-42")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -2814,6 +2814,7 @@ func TestLogKillSwitchDeny_JSONFormat(t *testing.T) {
 
 	checks := map[string]any{
 		"event":        "kill_switch_deny",
+		"request_id":   "req-42",
 		"transport":    "http",
 		"endpoint":     "https://api.example.com/v1/chat",
 		"source":       "global",
@@ -2847,7 +2848,7 @@ func TestLogKillSwitchDeny_SanitizesFields(t *testing.T) {
 		"global",
 		"bad\x1b[0mmessage",
 		"10.0.0\x1b[2J.1",
-	)
+		"")
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -3815,7 +3816,7 @@ func TestEmit_RemediationHintSweep(t *testing.T) {
 		{
 			name: "kill switch deny",
 			log: func(logger *Logger) {
-				logger.LogKillSwitchDeny("fetch", "/fetch", "sentinel", "maintenance", testClientIP)
+				logger.LogKillSwitchDeny("fetch", "/fetch", "sentinel", "maintenance", testClientIP, "")
 			},
 			wantEvent: EventKillSwitchDeny,
 			wantHint:  "active kill-switch source",
@@ -4242,7 +4243,7 @@ func TestEmit_LogKillSwitchDeny(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogKillSwitchDeny("http", "https://example.com", "global", "halted", testClientIP)
+	logger.LogKillSwitchDeny("http", "https://example.com", "global", "halted", testClientIP, "")
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -4261,7 +4262,7 @@ func TestEmit_DefensiveEvents_NoMITRETechnique(t *testing.T) {
 	defer logger.Close()
 
 	// Kill switch deny is a defensive action, not an attack detection.
-	logger.LogKillSwitchDeny("http", "https://example.com", "api", "testing", testClientIP)
+	logger.LogKillSwitchDeny("http", "https://example.com", "api", "testing", testClientIP, "")
 	ev, ok := sink.lastEvent()
 	if !ok {
 		t.Fatal("expected emitted event for kill_switch_deny")

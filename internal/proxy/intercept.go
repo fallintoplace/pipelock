@@ -255,7 +255,7 @@ func interceptConfirmResponseOrBlock(ic *InterceptContext, w http.ResponseWriter
 	if ic.Proxy != nil {
 		ic.Proxy.recordRequiredReceiptBlock(err, TransportConnect)
 	}
-	writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), receiptEmissionBlockReason, http.StatusForbidden)
+	writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(opts.RequestID), receiptEmissionBlockReason, http.StatusForbidden)
 	return true
 }
 
@@ -276,7 +276,7 @@ func interceptEmitReceiptOrBlock(ic *InterceptContext, w http.ResponseWriter, ac
 		blockedErr := newReceiptEmissionBlockedRequest(err)
 		ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+			blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(opts.RequestID),
 			receiptEmissionBlockReason, http.StatusForbidden)
 		return true
 	}
@@ -620,7 +620,7 @@ func newInterceptHandler(
 			ic.Logger.LogBlocked(newHTTPAuditContext(r.Context(), ic.Logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}), "identity_reload", stateIdentityReloadReason)
 			ic.Metrics.RecordTLSRequestBlocked("identity_reload")
 			_ = interceptEmitReceipt(ic, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: "intercept", Method: r.Method, Target: target, RequestID: ic.RequestID, Agent: ic.Agent})
-			writeBlockedError(w, blockInfoFor(blockreason.CrossRequestDeny, "identity_reload"), stateIdentityReloadReason, http.StatusForbidden)
+			writeBlockedError(w, blockInfoFor(blockreason.CrossRequestDeny, "identity_reload").WithRequestID(ic.RequestID), stateIdentityReloadReason, http.StatusForbidden)
 			return
 		}
 		reqStart := time.Now()
@@ -681,7 +681,7 @@ func newInterceptHandler(
 						Transport: "intercept", Method: r.Method, Target: target,
 						RequestID: ic.RequestID, Agent: ic.Agent,
 					})
-					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(ic.RequestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 					return
 				}
 				ic.Recorder = sess
@@ -721,7 +721,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				})
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+					blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope).WithRequestID(ic.RequestID),
 					"inbound mediation envelope verification failed", http.StatusForbidden)
 				return
 			}
@@ -760,7 +760,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.AuthorityMismatch, ""),
+				blockInfoFor(blockreason.AuthorityMismatch, "").WithRequestID(ic.RequestID),
 				"authority mismatch: blocked", http.StatusForbidden)
 			return
 		}
@@ -782,7 +782,7 @@ func newInterceptHandler(
 					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
 					ic.Metrics.RecordTLSRequestBlocked("airlock")
 					writeBlockedError(w,
-						blockInfoFor(blockreason.AirlockActive, ""),
+						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
 						"airlock: "+reason, http.StatusForbidden)
 					return
 				}
@@ -828,7 +828,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.KillSwitchActive, ""),
+				blockInfoFor(blockreason.KillSwitchActive, "").WithRequestID(ic.RequestID),
 				"kill switch active", http.StatusServiceUnavailable)
 		}
 
@@ -938,7 +938,7 @@ func newInterceptHandler(
 							blockedErr := newIssuerAllowReceiptBlockedRequest(err)
 							ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 							writeBlockedError(w,
-								blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+								blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 								"blocked: "+blockedErr.reason, http.StatusForbidden)
 							return
 						}
@@ -951,7 +951,7 @@ func newInterceptHandler(
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 					"blocked: "+blockedErr.reason, http.StatusForbidden)
 				return
 			}
@@ -966,7 +966,7 @@ func newInterceptHandler(
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(errCredentialAudienceReceiptEmitterUnavailable)
 			ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			writeBlockedError(w,
-				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		} else {
@@ -1050,7 +1050,7 @@ func newInterceptHandler(
 				if ic.Config.ExplainBlocksEnabled() && urlResult.Hint != "" {
 					w.Header().Set("X-Pipelock-Hint", urlResult.Hint)
 				}
-				writeBlockedError(w, blockInfoForResult(urlResult),
+				writeBlockedError(w, blockInfoForResult(urlResult).WithRequestID(ic.RequestID),
 					"blocked: "+urlResult.Reason, status)
 				return
 			}
@@ -1090,7 +1090,7 @@ func newInterceptHandler(
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				})
-				writeBlockedError(w, blockInfoForResult(urlResult),
+				writeBlockedError(w, blockInfoForResult(urlResult).WithRequestID(ic.RequestID),
 					"blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}
@@ -1119,7 +1119,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.RequestPolicyDeny, "git_protection"),
+				blockInfoFor(blockreason.RequestPolicyDeny, "git_protection").WithRequestID(ic.RequestID),
 				"blocked: "+gitPush.Reason, http.StatusForbidden)
 			return
 		}
@@ -1170,7 +1170,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					})
 					writeBlockedError(w,
-						blockInfoFor(blockreason.DLPMatch, scannerLabelA2A),
+						blockInfoFor(blockreason.DLPMatch, scannerLabelA2A).WithRequestID(ic.RequestID),
 						"blocked: "+a2aHdrResult.Reason, http.StatusForbidden)
 					return
 				}
@@ -1207,7 +1207,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ParseError, scannerLabelA2A),
+					blockInfoFor(blockreason.ParseError, scannerLabelA2A).WithRequestID(ic.RequestID),
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
@@ -1250,7 +1250,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A),
+						blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -1320,7 +1320,7 @@ func newInterceptHandler(
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(result.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 					"blocked: "+blockedErr.reason, http.StatusForbidden)
 				return
 			}
@@ -1478,7 +1478,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					setBodyBlockHint(w, scannerLabel)
-					writeBlockedError(w, blockInfo(scannerLabel),
+					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -1505,7 +1505,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					setBodyBlockHint(w, scannerLabel)
-					writeBlockedError(w, blockInfo(scannerLabel),
+					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
 				}
@@ -1561,7 +1561,7 @@ func newInterceptHandler(
 							Agent:     ic.Agent,
 						}))
 						writeBlockedError(w,
-							blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A),
+							blockInfoFor(a2aBodyBlockReason(a2aBodyResult), scannerLabelA2A).WithRequestID(ic.RequestID),
 							"blocked: "+reason, http.StatusForbidden)
 						return
 					}
@@ -1609,7 +1609,7 @@ func newInterceptHandler(
 					blockedErr := newIssuerAllowReceiptBlockedRequest(issuerAllowErr)
 					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 					writeBlockedError(w,
-						blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+						blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 						"blocked: "+blockedErr.reason, http.StatusForbidden)
 					return
 				}
@@ -1633,7 +1633,7 @@ func newInterceptHandler(
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer),
+					blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 					"blocked: "+blockedErr.reason, http.StatusForbidden)
 				return
 			}
@@ -1711,7 +1711,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(blockreason.DLPMatch, "header_dlp"),
+						blockInfoFor(blockreason.DLPMatch, "header_dlp").WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -1751,7 +1751,7 @@ func newInterceptHandler(
 			staleCEE := ceeEffectiveConfig(ic.Config.CrossRequestDetection, ic.Config.EnforceEnabled())
 			if !admission.Resolved && staleCEE.Enabled {
 				writeBlockedError(w,
-					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(ic.RequestID),
 					"blocked: live cross-request policy unavailable", http.StatusForbidden)
 				return
 			}
@@ -1830,7 +1830,7 @@ func newInterceptHandler(
 					PolicyHash: admission.PolicyHash,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(ic.RequestID),
 					"blocked: "+ceeRes.Reason, http.StatusForbidden)
 				return
 			}
@@ -1847,7 +1847,7 @@ func newInterceptHandler(
 						Pattern: session.ErrCapacity.Error(), Transport: "intercept",
 						Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 					})
-					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
+					writeBlockedError(w, blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(ic.RequestID), session.ErrCapacity.Error(), http.StatusServiceUnavailable)
 					return
 				}
 				level := recEscalationLevel(ceeRec)
@@ -1866,7 +1866,7 @@ func newInterceptHandler(
 					PolicyHash: admission.PolicyHash,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
 					adaptiveBlockedReason, http.StatusForbidden)
 				return
 			}
@@ -1909,7 +1909,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny),
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
 				adaptiveBlockedReason,
 				http.StatusForbidden)
 			return
@@ -1940,12 +1940,12 @@ func newInterceptHandler(
 			}
 			if rp := ic.Proxy.prepareRequestPolicyBody(r, &rpInput); rp.Block {
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
-				writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+				writeBlockedError(w, rp.Info.WithRequestID(ic.RequestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 				return
 			}
 			if rp := ic.Proxy.applyRequestPolicy(rpInput); rp.Block {
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
-				writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+				writeBlockedError(w, rp.Info.WithRequestID(ic.RequestID), "blocked by request policy: "+rp.Reason, http.StatusForbidden)
 				return
 			}
 		}
@@ -1964,7 +1964,7 @@ func newInterceptHandler(
 			ic.Logger.LogBlocked(actx, "contract", gateErr.Error())
 			ic.Metrics.RecordTLSRequestBlocked("contract")
 			writeBlockedError(w,
-				blockInfoFor(blockreason.ParseError, "contract"),
+				blockInfoFor(blockreason.ParseError, "contract").WithRequestID(ic.RequestID),
 				"blocked: contract evaluation failed", http.StatusForbidden)
 			return
 		}
@@ -1987,7 +1987,7 @@ func newInterceptHandler(
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			}))
-			writeGateBlockedError(w, gate, "blocked: "+reason)
+			writeGateBlockedError(w, gate, "blocked: "+reason, ic.RequestID)
 			return
 		}
 
@@ -2038,7 +2038,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).WithRequestID(ic.RequestID),
 					"blocked: "+blockedErr.reason, http.StatusForbidden)
 				return
 			}
@@ -2137,7 +2137,7 @@ func newInterceptHandler(
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				}))
-				writeBlockedError(w, ssrfErr.blockInfo(), "blocked: "+ssrfErr.detail, http.StatusForbidden)
+				writeBlockedError(w, ssrfErr.blockInfo().WithRequestID(ic.RequestID), "blocked: "+ssrfErr.detail, http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, string(ssrfErr.reason))
 				return
 			}
@@ -2168,7 +2168,7 @@ func newInterceptHandler(
 			ic.Logger.LogBlocked(actx, "authenticated_artifact", artifactErr.Error())
 			ic.Metrics.RecordTLSResponseBlocked("authenticated_artifact")
 			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{ActionID: actionID, Verdict: config.ActionBlock, Layer: "authenticated_artifact", Pattern: artifactErr.Error(), Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent}))
-			writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, "authenticated_artifact"), "blocked: authenticated artifact verification failed", http.StatusForbidden)
+			writeBlockedError(w, blockInfoFor(blockreason.EnvelopeVerifyFailed, "authenticated_artifact").WithRequestID(ic.RequestID), "blocked: authenticated artifact verification failed", http.StatusForbidden)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "authenticated_artifact")
 			return
 		} else if artifact != nil {
@@ -2272,7 +2272,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.CompressedResponse, sseLayer),
+					blockInfoFor(blockreason.CompressedResponse, sseLayer).WithRequestID(ic.RequestID),
 					"blocked: "+msg, http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_"+sseLayer)
 				return
@@ -2475,7 +2475,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
+					blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked").WithRequestID(ic.RequestID),
 					"blocked: compressed response cannot be scanned", http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "compressed_response")
 				return
@@ -2499,7 +2499,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.ParseError, "tls_response_blocked"),
+				blockInfoFor(blockreason.ParseError, "tls_response_blocked").WithRequestID(ic.RequestID),
 				"blocked: response read error", http.StatusForbidden)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_read_error")
 			return
@@ -2605,7 +2605,7 @@ func newInterceptHandler(
 					if scanFailure.Kind == sizeExemptReadFailureReadError {
 						info = blockInfoFor(blockreason.ParseError, "tls_response_blocked")
 					}
-					writeBlockedError(w, info, "blocked: "+scanFailure.Reason, http.StatusForbidden)
+					writeBlockedError(w, info.WithRequestID(ic.RequestID), "blocked: "+scanFailure.Reason, http.StatusForbidden)
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, string(scanFailure.Kind))
 					return
 				}
@@ -2628,7 +2628,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ResponseSize, "tls_response_blocked"),
+					blockInfoFor(blockreason.ResponseSize, "tls_response_blocked").WithRequestID(ic.RequestID),
 					"blocked: "+reason, http.StatusForbidden)
 				emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_size")
 				return
@@ -2659,7 +2659,7 @@ func newInterceptHandler(
 					Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 				})
 				writeBlockedError(w,
-					shieldBlocked.info, "blocked: "+shieldBlocked.reason, shieldBlocked.status)
+					shieldBlocked.info.WithRequestID(ic.RequestID), "blocked: "+shieldBlocked.reason, shieldBlocked.status)
 				emitBlockedPostRoundTripOutcome(shieldBlocked.status, shieldBlocked.info.Layer)
 				return
 			}
@@ -2702,7 +2702,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.MediaPolicy, "media_policy"),
+				blockInfoFor(blockreason.MediaPolicy, "media_policy").WithRequestID(ic.RequestID),
 				"blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "media_policy")
 			return
@@ -2808,7 +2808,7 @@ func newInterceptHandler(
 					Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					blockInfoFor(blockreason.ParseError, "response_scan_error").WithRequestID(ic.RequestID),
 					"blocked: response scan incomplete", http.StatusServiceUnavailable)
 				emitBlockedPostRoundTripOutcome(http.StatusServiceUnavailable, "response_scan_error")
 				return
@@ -2854,7 +2854,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(blockreason.PromptInjection, scannerLabelA2A),
+						blockInfoFor(blockreason.PromptInjection, scannerLabelA2A).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, scannerLabelA2A)
 					return
@@ -2920,7 +2920,7 @@ func newInterceptHandler(
 					Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.ParseError, "response_scan_error"),
+					blockInfoFor(blockreason.ParseError, "response_scan_error").WithRequestID(ic.RequestID),
 					"blocked: response scan incomplete", http.StatusServiceUnavailable)
 				emitBlockedPostRoundTripOutcome(http.StatusServiceUnavailable, "response_scan_error")
 				return
@@ -2983,7 +2983,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(blockreason.PromptInjection, responseScanLayer),
+						blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(ic.RequestID),
 						"blocked: response contains injection", http.StatusForbidden)
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, responseScanLayer)
 					return
@@ -3021,7 +3021,7 @@ func newInterceptHandler(
 						if ic.Proxy != nil {
 							ic.Proxy.recordRequiredReceiptBlock(receiptErr, TransportConnect)
 						}
-						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer), receiptEmissionBlockReason, http.StatusForbidden)
+						writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(ic.RequestID), receiptEmissionBlockReason, http.StatusForbidden)
 						emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 						return
 					}
