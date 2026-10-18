@@ -84,6 +84,20 @@ class ReleaseDocVersionTests(unittest.TestCase):
                 self.assertTrue(any("git clone release branch" in finding and "3.5.0" in finding
                                     for finding in check(root, "v3.6.0")))
 
+    def test_near_miss_repository_name_is_not_a_clone_pin(self) -> None:
+        for url in (
+            "https://github.com/pipelab-org/pipelock-fork.git",
+            "https://github.com/luckyPipewrench/pipelock-fork.git",
+            "https://github.com/pipelab-org/pipelock.git.backup",
+        ):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root, current=CURRENT + (
+                    f"git clone --branch v3.5.0 --depth 1 {url}\n"
+                ))
+                findings = check(root, "v3.6.0")
+                self.assertFalse(any("3.5.0" in finding for finding in findings), findings)
+
     def test_quoted_stale_pins_cannot_hide_behind_current_pins(self) -> None:
         for quote in ("'", '"', "`"):
             for line in (
