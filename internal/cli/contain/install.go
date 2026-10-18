@@ -540,6 +540,15 @@ func stepWaitPipelockReady() step {
 			if status != statusPass {
 				return false, fmt.Errorf("installed proxy failed readiness: %s", detail)
 			}
+			status, detail = probeContainedProxyReachability(ctx, &probeEnv{
+				agentUserName: env.agentUserName,
+				port:          env.proxyPort,
+				curlPath:      env.curlPath,
+				runCmd:        env.runCmd,
+			})
+			if status != statusPass {
+				return false, fmt.Errorf("installed proxy doorway failed readiness: %s", detail)
+			}
 			return false, nil
 		},
 	}

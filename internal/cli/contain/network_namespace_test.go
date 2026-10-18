@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -197,6 +198,202 @@ func TestInstallNetworkNamespaceRollbackAfterStartFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "undo install-agent-network-namespace") {
 		t.Fatalf("rollback output missing namespace undo:\n%s", out.String())
+	}
+}
+
+func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		for _, tc := range []struct {
+			name           string
+			unchanged      bool
+			inactive       bool
+			foreign        bool
+			inventoryRelay bool
+			disabled       bool
+			failAction     string
+			missing        bool
+			regular        bool
+			laterFail      bool
+		}{
+			{name: "changed active socket"},
+			{name: "unchanged active socket", unchanged: true},
+			{name: "changed inactive socket", inactive: true},
+			{name: "foreign relay", foreign: true},
+			{name: "inventory owns drifted relay", inventoryRelay: true},
+			{name: "relay stop failure", failAction: "stop"},
+			{name: "daemon reload failure", failAction: "daemon-reload"},
+			{name: "restart failure", failAction: "restart"},
+			{name: "missing listen path", missing: true},
+			{name: "regular file at listen path", regular: true},
+			{name: "later step failure", laterFail: true},
+			{name: "restore active disabled socket", disabled: true, laterFail: true},
+		} {
+			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
+				env, runner, out := newFakeEnv(t)
+				services := []config.ContainmentLoopbackService{}
+				socketPath, relayPath := env.proxyForwarderSocketPath, env.proxyForwarderServicePath
+				listenPath := containedDoorwaySocketPath
+				if declared {
+					service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+					services = append(services, service)
+					base := loopbackForwarderUnitBase(service.Host, service.Port)
+					socketPath = filepath.Join(filepath.Dir(socketPath), base+".socket")
+					relayPath = filepath.Join(filepath.Dir(relayPath), base+".service")
+					listenPath = declaredLoopbackDoorwayPath(service.Host, service.Port)
+				}
+				if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(t.Context(), env); err != nil {
+					t.Fatal(err)
+				}
+				body, err := os.ReadFile(filepath.Clean(socketPath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				oldListen := listenPath + ".previous"
+				if !tc.unchanged {
+					body = []byte(strings.ReplaceAll(string(body), listenPath, oldListen))
+					if err := os.WriteFile(socketPath, body, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					oldListen = listenPath
+				}
+				if tc.foreign || tc.inventoryRelay {
+					if err := os.WriteFile(relayPath, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					// Inventory ownership is independently sufficient. Remove
+					// it to exercise the managed-file boundary for either kind.
+					if tc.inventoryRelay && !declared {
+						// The proxy has no loopback inventory record; ownership
+						// must come from its managed relay file instead.
+						t.Skip("inventory ownership applies to declared loopback relays")
+					}
+					if tc.foreign {
+						if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{}\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				socket, relay := filepath.Base(socketPath), filepath.Base(relayPath)
+				runner.calls = nil
+				if !tc.disabled {
+					runner.on(argvFor(testSystemctl, "is-enabled", socket), systemctlEnabled, 0, nil)
+				}
+				active, relayActive := !tc.inactive, !tc.inactive
+				bound := oldListen
+				if tc.inactive {
+					bound = ""
+				} else {
+					runner.on(argvFor(testSystemctl, "is-active", socket), systemctlActive, 0, nil)
+				}
+				originalRun := env.runCmd
+				failed := false
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					result, code, runErr := originalRun(ctx, name, args...)
+					if name != testSystemctl || len(args) == 0 {
+						return result, code, runErr
+					}
+					unit := args[len(args)-1]
+					if !failed && args[0] == tc.failAction && (unit == socket || unit == relay || args[0] == "daemon-reload") {
+						failed = true
+						return "injected failure", 1, nil
+					}
+					if args[0] == "stop" && unit == relay {
+						relayActive = false
+					}
+					if unit == socket {
+						switch args[0] {
+						case "stop", "restart":
+							active, bound = false, ""
+						}
+						if args[0] == "restart" || args[0] == "start" || (args[0] == "enable" && containsArg(args, "--now")) {
+							if !active {
+								if relayActive {
+									return "socket service already active, refusing", 1, nil
+								}
+								current, readErr := os.ReadFile(filepath.Clean(socketPath))
+								if readErr != nil {
+									t.Fatal(readErr)
+								}
+								for _, line := range strings.Split(string(current), "\n") {
+									if path, ok := strings.CutPrefix(line, "ListenStream="); ok {
+										bound = path
+									}
+								}
+								active = true
+							}
+						}
+					}
+					return result, code, runErr
+				}
+				originalStat := env.stat
+				env.stat = func(path string) (os.FileInfo, error) {
+					if path == listenPath {
+						if tc.missing || bound != path {
+							return nil, os.ErrNotExist
+						}
+						if tc.regular {
+							return fakeFileInfo{}, nil
+						}
+						return fakeFileInfo{mode: os.ModeSocket}, nil
+					}
+					return originalStat(path)
+				}
+				steps := []step{stepInstallNetworkNamespaceWithServices(&services)}
+				if tc.laterFail {
+					steps = append(steps, step{name: "later", apply: func(context.Context, *installEnv) (bool, error) {
+						return false, errors.New("later failure")
+					}})
+				}
+				_, err = runSteps(t.Context(), env, out, steps)
+				wantFailure := tc.foreign || tc.failAction != "" || tc.missing || tc.regular || tc.laterFail
+				if (err != nil) != wantFailure {
+					t.Fatalf("runSteps = %v, want failure=%t; calls=%v", err, wantFailure, runner.calls)
+				}
+				if tc.foreign {
+					if fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatal("stopped a foreign relay")
+					}
+					return
+				}
+				if tc.unchanged || tc.inactive {
+					if fakeRunnerCalled(runner, "systemctl restart "+socket) || fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatalf("unnecessary restart or relay stop: %v", runner.calls)
+					}
+				}
+				if wantFailure {
+					got, readErr := os.ReadFile(filepath.Clean(socketPath))
+					if readErr != nil || string(got) != string(body) || bound != oldListen || !active {
+						t.Fatalf("rollback: body=%q err=%v bound=%q active=%t", got, readErr, bound, active)
+					}
+					if strings.Contains(err.Error(), "rollback incomplete") {
+						t.Fatalf("rollback failed: %v", err)
+					}
+					if tc.disabled && !fakeRunnerCalled(runner, argvFor(testSystemctl, "disable", socket)) {
+						t.Fatal("rollback did not restore disabled socket state")
+					}
+					return
+				}
+				if bound != listenPath {
+					t.Fatalf("listening at %q, want %q", bound, listenPath)
+				}
+				if !tc.unchanged && !tc.inactive {
+					wantOrder := []string{"systemctl stop " + relay, "systemctl daemon-reload", "systemctl restart " + socket, "systemctl enable --now " + containedNamespaceForwarderUnit}
+					index := 0
+					for _, call := range runner.calls {
+						if argvFor(call.name, call.args...) == wantOrder[index] {
+							index++
+							if index == len(wantOrder) {
+								break
+							}
+						}
+					}
+					if index != len(wantOrder) {
+						t.Fatalf("missing ordered actions %v: %v", wantOrder, runner.calls)
+					}
+				}
+			})
+		}
 	}
 }
 
